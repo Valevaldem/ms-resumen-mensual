@@ -1,9 +1,8 @@
 // app/api/cron/resumen-mensual/route.js
-// Orquesta: token -> ventas del mes -> procesa -> Excel -> correo.
-// Lo dispara Vercel Cron el día 1, o tú a mano con ?secret=...&month=YYYY-MM&dryrun=1
 import { obtenerAccessToken, obtenerVentas } from "../../../../lib/hike.js";
 import { procesar } from "../../../../lib/procesar.js";
 import { construirExcel } from "../../../../lib/excel.js";
+import { generarGraficas } from "../../../../lib/graficas.js";
 import { construirCuerpo, nombreArchivoMes } from "../../../../lib/cuerpo.js";
 import { enviarCorreo } from "../../../../lib/email.js";
 import { rangoMesAnterior, rangoDeMes } from "../../../../lib/fechas.js";
@@ -17,12 +16,10 @@ export async function GET(request) {
   const url = new URL(request.url);
   const auth = request.headers.get("authorization");
   const secretQ = url.searchParams.get("secret");
-  const autorizado =
-    auth === `Bearer ${process.env.CRON_SECRET}` || secretQ === process.env.CRON_SECRET;
+  const autorizado = auth === `Bearer ${process.env.CRON_SECRET}` || secretQ === process.env.CRON_SECRET;
   if (!autorizado) return new Response("No autorizado", { status: 401 });
 
   try {
-    // Rango: por defecto el mes que cerró; ?month=YYYY-MM para pruebas de un mes específico.
     const monthParam = url.searchParams.get("month");
     let rango;
     if (monthParam) {
@@ -37,20 +34,20 @@ export async function GET(request) {
     const ventas = await obtenerVentas(token, rango.desdeISO, rango.hastaISO);
     const resumen = procesar(ventas);
 
-    // Modo prueba: NO manda correo, solo regresa los números para revisar.
     if (dryrun) {
       return Response.json({
-        ok: true,
-        dryrun: true,
+        ok: true, dryrun: true,
         rango: { desde: rango.desdeISO, hasta: rango.hastaISO },
         totalConIva: resumen.totalConIva,
-        ordenes: resumen.totalOrdenes,
+        invoices: resumen.invoicesTotal,
+        piezas: resumen.piezasTotal,
         pendiente: resumen.totalPendiente,
         asesoras: Object.keys(resumen.porAsesora),
       });
     }
 
-    const wb = construirExcel(resumen, { anio: rango.anio, mes: rango.mes });
+    const graficas = await generarGraficas(resumen);
+    const wb = construirExcel(resumen, { anio: rango.anio, mes: rango.mes, graficas, ventas });
     const xlsxBuffer = Buffer.from(await wb.xlsx.writeBuffer());
     const html = construirCuerpo(resumen, { anio: rango.anio, mes: rango.mes });
 
@@ -62,9 +59,8 @@ export async function GET(request) {
     });
 
     return Response.json({
-      ok: true,
-      enviado: true,
-      ordenes: resumen.totalOrdenes,
+      ok: true, enviado: true,
+      invoices: resumen.invoicesTotal,
       totalConIva: resumen.totalConIva,
       pendiente: resumen.totalPendiente,
     });
